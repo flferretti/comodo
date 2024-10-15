@@ -14,7 +14,7 @@ import datetime
 import pathlib
 from pathlib import Path
 
-
+os.environ["MUJOCO_GL"] = "egl"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["XLA_PYTHON_CLIENT_MEM_PREALLOCATE"] = "False"
 
@@ -140,15 +140,12 @@ print(
 # %%
 # ==== Define JaxSim simulator and set initial position ====
 
-js = JaxsimSimulator()
+js = JaxsimSimulator(visualization_mode="record")
 js.load_model(robot_model_init, s=s_0[to_js], xyz_rpy=xyz_rpy_0)
 s_js, ds_js, tau_js = js.get_state()
 t = 0.0
 H_b = js.get_base()
 w_b = js.get_base_velocity()
-
-# Specify if open an interactive window to visualize the robot during the simulation
-js.visualize_robot_flag = False
 
 print(f"Contact model in use: {js.model.contact_model}")
 print(f"Link names:\n{js.model.link_names()}")

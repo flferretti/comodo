@@ -17,16 +17,17 @@ from jaxsim.rbda.contacts.relaxed_rigid import (
     RelaxedRigidContactsParams,
 )
 from jaxsim.rbda.contacts.rigid import RigidContacts, RigidContactsParams
-from jaxsim.rbda.contacts.visco_elastic import ViscoElasticContacts
+
+# from jaxsim.rbda.contacts.visco_elastic import ViscoElasticContacts
 
 from comodo.abstractClasses.simulator import Simulator
 
 
 class JaxsimSimulator(Simulator):
-    def __init__(self) -> None:
-        self.dt = 0.000_5
+    def __init__(self, visualization_mode) -> None:
+        self.dt = 0.001
         self.tau = jnp.zeros(20)
-        self.visualization_mode = None
+        self.visualization_mode = visualization_mode
         self.viz = None
         self.recorder = None
         self.link_contact_forces = None
@@ -35,7 +36,8 @@ class JaxsimSimulator(Simulator):
         self.left_footsole_frame_idx = None
         self.right_footsole_frame_idx = None
         self.viz_fps = 10
-        self.last_rendered_t_ns = 0.0
+        self.last_rendered_t_ns = 0
+        self.time = 0.0
 
     def load_model(
         self,
@@ -50,16 +52,11 @@ class JaxsimSimulator(Simulator):
         model = js.model.JaxSimModel.build_from_model_description(
             model_description=robot_model.urdf_string,
             model_name=robot_model.robot_name,
-            # contact_model=RigidContacts(
-            #     parameters=RigidContactsParams(mu=0.5, K=1.0e4, D=1.0e2)
-            # ),
-            # contact_model=RelaxedRigidContacts(
-            #     parameters=RelaxedRigidContactsParams(
-            #         mu=0.8,
-            #         time_constant=0.005,
-            #     )
-            # ),
-            # contact_model=ViscoElasticContacts(),
+            contact_model=RelaxedRigidContacts(
+                parameters=RelaxedRigidContactsParams(
+                    mu=0.001,
+                )
+            ),
         )
         model = js.model.reduce(
             model=model,
@@ -72,11 +69,7 @@ class JaxsimSimulator(Simulator):
             base_position=jnp.array(xyz_rpy[:3]),
             base_quaternion=jnp.array(self.RPY_to_quat(*xyz_rpy[3:])),
             joint_positions=jnp.array(s),
-            contacts_params=js.contact.estimate_good_soft_contacts_parameters(
-                model=model,
-                number_of_active_collidable_points_steady_state=16,
-                max_penetration=0.002,
-            ),
+            contacts_params=model.contact_model.parameters,
         )
 
         self.integrator = integrators.fixed_step.RungeKutta4.build(
@@ -112,26 +105,28 @@ class JaxsimSimulator(Simulator):
         logging.info(f"Left foot sole frame index: {self.left_footsole_frame_idx}")
         logging.info(f"Right foot sole frame index: {self.right_footsole_frame_idx}")
 
-        if self.visualization_mode is not None:
-            if self.visualization_mode not in ["record", "interactive"]:
-                raise ValueError(
-                    f"Invalid visualization mode: {self.visualization_mode}. "
-                    f"Valid options are: 'record', 'interactive'"
-                )
-
-            mjcf_string, assets = UrdfToMjcf.convert(
-                urdf=self.model.built_from,
+        # if self.visualization_mode is not None:
+        if self.visualization_mode not in ["record", "interactive"]:
+            raise ValueError(
+                f"Invalid visualization mode: {self.visualization_mode}. "
+                f"Valid options are: 'record', 'interactive'"
             )
 
-            self.mj_model_helper = MujocoModelHelper.build_from_xml(
-                mjcf_description=mjcf_string, assets=assets
-            )
+        mjcf_string, assets = UrdfToMjcf.convert(
+            urdf=self.model.built_from,
+        )
 
-            self.recorder = jaxsim.mujoco.MujocoVideoRecorder(
-                model=self.mj_model_helper.model,
-                data=self.mj_model_helper.data,
-                fps=30,
-            )
+        self.mj_model_helper = MujocoModelHelper.build_from_xml(
+            mjcf_description=mjcf_string, assets=assets
+        )
+
+        self.recorder = jaxsim.mujoco.MujocoVideoRecorder(
+            model=self.mj_model_helper.model,
+            data=self.mj_model_helper.data,
+            fps=30,
+        )
+
+        assert self.recorder is not None
 
     def get_feet_wrench(self) -> npt.ArrayLike:
         wrenches = self.get_link_contact_forces()
@@ -147,7 +142,7 @@ class JaxsimSimulator(Simulator):
         if torques is None:
             torques = np.zeros(20)
 
-        for _ in range(n_step):
+        for i in range(n_step):
             # self.data, self.integrator_state = jaxsim.rbda.contacts.visco_elastic.step(
             #     model=self.model,
             #     data=self.data,
@@ -155,6 +150,8 @@ class JaxsimSimulator(Simulator):
             #     joint_forces=torques,
             #     link_forces=None,  # f
             # )
+            self.time += self.dt
+
             self.data, self.integrator_state = js.model.step(
                 model=self.model,
                 data=self.data,
@@ -165,22 +162,20 @@ class JaxsimSimulator(Simulator):
                 link_forces=None,  # f
             )
 
-            current_time_ns = np.array(object=self.data.time_ns).astype(int)
-
             match self.visualization_mode:
                 case "record":
-                    if current_time_ns - self.last_rendered_t_ns >= int(
+                    if (self.time - self.last_rendered_t_ns) * 1e9 >= int(
                         1e9 / self.recorder.fps
                     ):
                         self.record_frame()
-                        self.last_rendered_t_ns = current_time_ns
+                        self.last_rendered_t_ns = self.time
 
                 case "interactive":
-                    if current_time_ns - self.last_rendered_t_ns >= int(
+                    if (self.time - self.last_rendered_t_ns) * 1e9 >= int(
                         1e9 / self.viz_fps
                     ):
                         self.render()
-                        self.last_rendered_t_ns = current_time_ns
+                        self.last_rendered_t_ns = self.time
                 case None:
                     pass
 
@@ -197,7 +192,7 @@ class JaxsimSimulator(Simulator):
         return np.array(self.data.base_velocity())
 
     def get_simulation_time(self) -> float:
-        return self.data.time()
+        return self.time
 
     def get_state(self) -> Union[npt.ArrayLike, npt.ArrayLike, npt.ArrayLike]:
         s = np.array(self.data.joint_positions())

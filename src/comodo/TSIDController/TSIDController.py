@@ -9,7 +9,7 @@ import manifpy
 class TSIDController(Controller):
     def __init__(self, frequency, robot_model) -> None:
 
-        blf.text_logging.set_verbosity(blf.text_logging.Verbosity.Debug)
+        blf.text_logging.set_verbosity(blf.text_logging.Verbosity.Warn)
         self.controller = blf.tsid.QPTSID()
         self.gravity = iDynTree.Vector3()
         self.gravity.zero()
